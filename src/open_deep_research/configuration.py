@@ -28,13 +28,14 @@ class SearchAPI(Enum):
     LINKUP = "linkup"
     DUCKDUCKGO = "duckduckgo"
     GOOGLESEARCH = "googlesearch"
+    GURU = "guru"
 
 @dataclass(kw_only=True)
 class Configuration:
     """The configurable fields for the chatbot."""
     # Common configuration
     report_structure: str = DEFAULT_REPORT_STRUCTURE # Defaults to the default report structure
-    search_api: SearchAPI = SearchAPI.TAVILY # Default to TAVILY
+    search_api: SearchAPI = SearchAPI.GURU # Default to GURU
     search_api_config: Optional[Dict[str, Any]] = None
     
     # Graph-specific configuration

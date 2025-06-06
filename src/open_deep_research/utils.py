@@ -6,6 +6,7 @@ import concurrent
 import aiohttp
 import httpx
 import time
+import base64
 from typing import List, Optional, Dict, Any, Union, Literal
 from urllib.parse import unquote
 
@@ -59,6 +60,7 @@ def get_search_params(search_api: str, search_api_config: Optional[Dict[str, Any
         "pubmed": ["top_k_results", "email", "api_key", "doc_content_chars_max"],
         "linkup": ["depth"],
         "googlesearch": ["max_results"],
+        "guru": ["agent_id"],
     }
 
     # Get the list of accepted parameters for the given search API
@@ -1431,6 +1433,195 @@ async def azureaisearch_search(queries: List[str], max_results: int = 5, topic: 
     else:
         return "No valid search results found. Please try different search queries or use a different search API."
 
+@traceable
+async def guru_search_async(search_queries: List[str], agent_id: Optional[str] = None) -> List[dict]:
+    """
+    Performs concurrent searches using the Guru API.
+
+    Args:
+        search_queries (List[str]): List of search queries to process
+        agent_id (Optional[str]): The agent ID to filter results by
+
+    Returns:
+        List[dict]: List of search responses from Guru API, one per query. Each response has format:
+            {
+                'query': str,                    # The original search query
+                'follow_up_questions': None,      
+                'answer': None,
+                'images': [],
+                'results': [                     # List of search results
+                    {
+                        'title': str,            # Title of the document
+                        'url': str,              # URL to the document
+                        'content': str,          # Summary/snippet of content
+                        'score': float,          # Relevance score
+                        'raw_content': str       # Full document content
+                    },
+                    ...
+                ]
+            }
+    """
+    # Check for API token
+    api_username = os.environ.get("GURU_API_USERNAME")
+    api_password = os.environ.get("GURU_API_PASSWORD")
+    if not api_username or not api_password:
+        raise ValueError("GURU_API_USERNAME and GURU_API_PASSWORD environment variables are required")
+
+    headers = {
+        "Authorization": f"Basic {base64.b64encode(f'{os.environ.get("GURU_API_USERNAME")}:{os.environ.get("GURU_API_PASSWORD")}'.encode()).decode()}",
+        "Accept": "application/json"
+    }
+
+    async def process_single_query(query):
+        try:
+            params = {
+                "searchTerms": query
+            }
+            if agent_id:
+                params["agentId"] = agent_id
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.getguru.com/api/v1/search/documents",
+                    headers=headers,
+                    params=params
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        print(f"Guru API error: {response.status}, {error_text}")
+                        return {
+                            'query': query,
+                            'follow_up_questions': None,
+                            'answer': None,
+                            'images': [],
+                            'results': [],
+                            'error': f"API error: {response.status}"
+                        }
+
+                    data = await response.json()
+                    results = []
+
+                    # Process each result from Guru
+                    for i, item in enumerate(data.get('documents', [])):
+                        result = {
+                            'title': item.get('title', ''),
+                            'url': item.get('url', ''),  # Guru might provide a different field for URLs
+                            'content': item.get('content', ''),  # Summary or preview
+                            'score': 1.0 - (i * 0.1),  # Simple scoring mechanism
+                            'raw_content': item.get('content', ''),  # Full content if available
+                            'id': item.get('id', ''),
+                            'documentType': item.get('documentType', '')
+                        }
+                        results.append(result)
+
+                    return {
+                        'query': query,
+                        'follow_up_questions': None,
+                        'answer': None,
+                        'images': [],
+                        'results': results
+                    }
+
+        except Exception as e:
+            print(f"Error in Guru search for query '{query}': {str(e)}")
+            return {
+                'query': query,
+                'follow_up_questions': None,
+                'answer': None,
+                'images': [],
+                'results': [],
+                'error': str(e)
+            }
+
+    # Process all queries with a small delay between them
+    search_docs = []
+    for i, query in enumerate(search_queries):
+        if i > 0:  # Don't delay the first request
+            await asyncio.sleep(0.5)  # Half second delay between requests
+        
+        result = await process_single_query(query)
+        search_docs.append(result)
+
+    return search_docs
+
+@tool
+async def guru_search(queries: List[str], agent_id: Optional[str] = None) -> str:
+    """
+    Fetches results from Guru API.
+    
+    Args:
+        queries (List[str]): List of search queries
+        agent_id (Optional[str]): The agent ID to filter results by
+        
+    Returns:
+        str: A formatted string of search results
+    """
+    # Use guru_search_async to get content
+    search_results = await guru_search_async(queries, agent_id)
+
+    # Format the search results
+    formatted_output = f"Search results: \n\n"
+    
+    # Deduplicate results by URL
+    unique_results = {}
+    
+    for response in search_results:
+        for result in response['results']:
+            url = result['url']
+            if url not in unique_results:
+                unique_results[url] = result
+
+    # Create new array with enriched document details
+    enriched_results = []
+
+    print(f"\n\n----- checkpoint 1\n\n")
+    print(f"unique_results: {unique_results}")
+    
+    # Get additional document details for each result
+    for url, result in unique_results.items():
+        try:
+            # Extract source_type and document_id from result
+            source_type = result.get('documentType')
+            document_id = result.get('id')
+            
+            if source_type and document_id:
+                # Call Guru API endpoint to get full document details synchronously
+                api_url = f"https://api.getguru.com/api/v1/search/documents/{source_type}/{document_id}"
+                headers = {
+                    "Authorization": f"Basic {base64.b64encode(f'{os.environ.get("GURU_API_USERNAME")}:{os.environ.get("GURU_API_PASSWORD")}'.encode()).decode()}",
+                    "Content-Type": "application/json"
+                }
+                response = requests.get(api_url, headers=headers)
+                if response.status_code == 200:
+                    doc_details = response.json()
+                    # Create new enriched result combining original and new details
+                    
+                    print(f"\n\ndoc_details: {doc_details}")
+                    enriched_results.append(doc_details)
+                else:
+                    print(f"Failed to get document details for {url}: {response.status_code}")
+                    enriched_results.append(result)  # Add original result if API call fails
+                            
+            time.sleep(0.1)  # Small delay between API calls
+            
+        except Exception as e:
+            print(f"Error getting document details for {url}: {str(e)}")
+            enriched_results.append(result)  # Add original result if there's an error
+            continue
+    
+    # Format the unique results
+    for i, (url, result) in enumerate(unique_results.items()):
+        formatted_output += f"\n\n--- SOURCE {i+1}: {result['title']} ---\n"
+        formatted_output += f"URL: {url}\n\n"
+        formatted_output += f"CONTENT:\n{result['content']}\n\n"
+        formatted_output += "\n\n" + "-" * 80 + "\n"
+
+
+    
+    if unique_results:
+        return formatted_output
+    else:
+        return "No valid search results found. Please try different search queries."
 
 async def select_and_execute_search(search_api: str, query_list: list[str], params_to_pass: dict) -> str:
     """Select and execute the appropriate search API.
@@ -1454,6 +1645,9 @@ async def select_and_execute_search(search_api: str, query_list: list[str], para
     elif search_api == "duckduckgo":
         # DuckDuckGo search tool used with both workflow and agent 
         return await duckduckgo_search.ainvoke({'search_queries': query_list})
+    elif search_api == "guru":
+        # Guru search tool used with both workflow and agent
+        return await guru_search.ainvoke({'queries': query_list, 'agent_id': params_to_pass.get('agent_id')}, **params_to_pass)
     elif search_api == "perplexity":
         search_results = perplexity_search(query_list, **params_to_pass)
     elif search_api == "exa":
