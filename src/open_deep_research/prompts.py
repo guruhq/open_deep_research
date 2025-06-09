@@ -36,10 +36,7 @@ The report should follow this organization:
 {report_organization}
 </Report organization>
 
-<Context>
-Here is context to use to plan the sections of the report: 
-{context}
-</Context>
+
 
 <Task>
 Generate a list of sections for the report. Your plan should be tight and focused with NO overlapping sections or unnecessary filler. 

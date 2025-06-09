@@ -10,6 +10,7 @@ import base64
 from typing import List, Optional, Dict, Any, Union, Literal
 from urllib.parse import unquote
 
+from langchain.chat_models import init_chat_model
 from exa_py import Exa
 from linkup import LinkupClient
 from tavily import AsyncTavilyClient
@@ -1574,8 +1575,6 @@ async def guru_search(queries: List[str], agent_id: Optional[str] = None) -> str
     # Create new array with enriched document details
     enriched_results = []
 
-    print(f"\n\n----- checkpoint 1\n\n")
-    print(f"unique_results: {unique_results}")
     
     # Get additional document details for each result
     for url, result in unique_results.items():
@@ -1595,9 +1594,18 @@ async def guru_search(queries: List[str], agent_id: Optional[str] = None) -> str
                 if response.status_code == 200:
                     doc_details = response.json()
                     # Create new enriched result combining original and new details
-                    
-                    print(f"\n\ndoc_details: {doc_details}")
-                    enriched_results.append(doc_details)
+                    print(f"\n gathering doc details for {url}")
+                    # Update result with doc_details while preserving original structure
+                    doc_content = doc_details.get('content', result.get('content'))
+                    enriched_result = {
+                        'title': doc_details.get('title', result.get('title')),
+                        'url': doc_details.get('url', result.get('url')), 
+                        'content': (await summarize_document(doc_content)
+                                  if doc_content and len(doc_content) > 50000 
+                                  else doc_content),
+                        'score': result.get('score', 1.0)
+                    }
+                    enriched_results.append(enriched_result)
                 else:
                     print(f"Failed to get document details for {url}: {response.status_code}")
                     enriched_results.append(result)  # Add original result if API call fails
@@ -1609,10 +1617,11 @@ async def guru_search(queries: List[str], agent_id: Optional[str] = None) -> str
             enriched_results.append(result)  # Add original result if there's an error
             continue
     
+    
     # Format the unique results
-    for i, (url, result) in enumerate(unique_results.items()):
+    for i, result in enumerate(enriched_results):
         formatted_output += f"\n\n--- SOURCE {i+1}: {result['title']} ---\n"
-        formatted_output += f"URL: {url}\n\n"
+        formatted_output += f"URL: {result['url']}\n\n"
         formatted_output += f"CONTENT:\n{result['content']}\n\n"
         formatted_output += "\n\n" + "-" * 80 + "\n"
 
@@ -1622,6 +1631,26 @@ async def guru_search(queries: List[str], agent_id: Optional[str] = None) -> str
         return formatted_output
     else:
         return "No valid search results found. Please try different search queries."
+    
+async def summarize_document(content: str):
+    """Summarize a document using OpenAI"""
+    
+    
+    # Create prompt for summarization
+    prompt = f"Please summarize the following document content concisely, keeping the key points limit content to at most 2000 characters. Keep as much content as possible but remove any formatting and non readable text:\n\n{content}"
+    
+    # Call LLM for summarization
+    writer_model = init_chat_model(model="gpt-4.1-mini-2025-04-14", max_tokens=1000, temperature=0.3)
+    response = await writer_model.ainvoke([
+        {"role": "system", "content": "You are a helpful assistant that summarizes documents concisely."},
+        {"role": "user", "content": prompt}
+    ])
+    
+    summary = response.content
+
+    
+    return summary
+
 
 async def select_and_execute_search(search_api: str, query_list: list[str], params_to_pass: dict) -> str:
     """Select and execute the appropriate search API.

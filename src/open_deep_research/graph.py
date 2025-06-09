@@ -95,10 +95,10 @@ async def generate_report_plan(state: ReportState, config: RunnableConfig):
     query_list = [query.search_query for query in results.queries]
 
     # Search the web with parameters
-    source_str = await select_and_execute_search(search_api, query_list, params_to_pass)
+    #source_str = await select_and_execute_search(search_api, query_list, params_to_pass)
 
     # Format system instructions
-    system_instructions_sections = report_planner_instructions.format(topic=topic, report_organization=report_structure, context=source_str, feedback=feedback)
+    system_instructions_sections = report_planner_instructions.format(topic=topic, report_organization=report_structure,  feedback=feedback)
 
     # Set the planner
     planner_provider = get_config_value(configurable.planner_provider)
@@ -114,7 +114,7 @@ async def generate_report_plan(state: ReportState, config: RunnableConfig):
         # Allocate a thinking budget for claude-3-7-sonnet-latest as the planner model
         planner_llm = init_chat_model(model=planner_model, 
                                       model_provider=planner_provider, 
-                                      max_tokens=20_000, 
+                                      max_tokens=50_000, 
                                       thinking={"type": "enabled", "budget_tokens": 16_000})
 
     else:
@@ -295,7 +295,7 @@ async def write_section(state: SectionState, config: RunnableConfig) -> Command[
     writer_provider = get_config_value(configurable.writer_provider)
     writer_model_name = get_config_value(configurable.writer_model)
     writer_model_kwargs = get_config_value(configurable.writer_model_kwargs or {})
-    writer_model = init_chat_model(model=writer_model_name, model_provider=writer_provider, model_kwargs=writer_model_kwargs) 
+    writer_model = init_chat_model(model="gpt-4.1-mini-2025-04-14", model_provider="openai", model_kwargs=writer_model_kwargs)
 
     section_content = await writer_model.ainvoke([SystemMessage(content=section_writer_instructions),
                                            HumanMessage(content=section_writer_inputs_formatted)])
